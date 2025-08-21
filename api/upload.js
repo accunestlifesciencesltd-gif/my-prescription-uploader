@@ -2,9 +2,70 @@ const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 require('@shopify/shopify-api/adapters/node');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
-const FormData = require('form-data');
-const fetch = require('node-fetch');
-const SHOP_NAME = 'aq6tap-1i.myshopify.com';
+const https = require('https');
+const http = require('http');
+const path = require('path');
+const { URL } = require('url');
+// Helper function to create multipart form data
+function createMultipartData(fields, file, filename, contentType) {
+  const boundary = `----formdata-${Date.now()}`;
+  let body = '';
+
+  // Add form fields
+  for (const field of fields) {
+    body += `--${boundary}\r\n`;
+    body += `Content-Disposition: form-data; name="${field.name}"\r\n\r\n`;
+    body += `${field.value}\r\n`;
+  }
+
+  // Add file
+  body += `--${boundary}\r\n`;
+  body += `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`;
+  body += `Content-Type: ${contentType}\r\n\r\n`;
+  
+  const bodyBuffer = Buffer.from(body);
+  const fileBuffer = fs.readFileSync(file);
+  const endBuffer = Buffer.from(`\r\n--${boundary}--\r\n`);
+  
+  return {
+    buffer: Buffer.concat([bodyBuffer, fileBuffer, endBuffer]),
+    contentType: `multipart/form-data; boundary=${boundary}`
+  };
+}
+
+// Helper function to make HTTP request
+function makeRequest(url, options, data) {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(url);
+    const isHttps = urlObj.protocol === 'https:';
+    const client = isHttps ? https : http;
+
+    const req = client.request({
+      hostname: urlObj.hostname,
+      port: urlObj.port || (isHttps ? 443 : 80),
+      path: urlObj.pathname + urlObj.search,
+      method: options.method,
+      headers: options.headers
+    }, (res) => {
+      let responseData = '';
+      res.on('data', (chunk) => responseData += chunk);
+      res.on('end', () => {
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          text: () => Promise.resolve(responseData)
+        });
+      });
+    });
+
+    req.on('error', reject);
+    
+    if (data) {
+      req.write(data);
+    }
+    req.end();
+  });
+}
 
 // Initialize the Shopify API context with all required fields
 const shopify = shopifyApi({
@@ -15,7 +76,7 @@ const shopify = shopifyApi({
   apiSecretKey: 'this-secret-can-be-any-string', 
 });
 
-// Mutation to create staged upload
+const SHOP_NAME = 'aq6tap-1i.myshopify.com';
 const STAGED_UPLOADS_CREATE_MUTATION = `
   mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
     stagedUploadsCreate(input: $input) {
@@ -135,26 +196,25 @@ module.exports = async (req, res) => {
       }
 
       // Step 2: Upload file to staged URL
-      const FormData = require('form-data');
-      const fetch = require('node-fetch');
+      const formFields = stagedTarget.parameters.map(param => ({
+        name: param.name,
+        value: param.value
+      }));
       
-      const formData = new FormData();
-      
-      // Add parameters from staged upload
-      stagedTarget.parameters.forEach(param => {
-        formData.append(param.name, param.value);
-      });
-      
-      // Add the file
-      formData.append('file', fs.createReadStream(prescriptionFile.path), {
-        filename: fileName,
-        contentType: prescriptionFile.type || 'application/pdf'
-      });
+      const multipartData = createMultipartData(
+        formFields,
+        prescriptionFile.path,
+        fileName,
+        prescriptionFile.type || 'application/pdf'
+      );
 
-      const uploadResponse = await fetch(stagedTarget.url, {
+      const uploadResponse = await makeRequest(stagedTarget.url, {
         method: 'POST',
-        body: formData
-      });
+        headers: {
+          'Content-Type': multipartData.contentType,
+          'Content-Length': multipartData.buffer.length
+        }
+      }, multipartData.buffer);
 
       if (!uploadResponse.ok) {
         console.error('File upload failed:', await uploadResponse.text());

@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "@shopify/shopify-api": "^7.5.2",
-    "formidable-serverless": "^1.1.1"
-  }
-}

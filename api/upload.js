@@ -1,11 +1,13 @@
 // FINAL CORRECTED CODE - Paste this entire block into api/upload.js
 
-const shopify = require('@shopify/shopify-api');
+const { Shopify } = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
 const SHOP_NAME = 'accunest.co.in';
 const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
+
+const client = new Shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
 
 const CREATE_FILE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {
@@ -37,66 +39,58 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  try {
-    // MOVED client initialization inside the handler for robustness
-    const client = new shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
-    
-    const form = new formidable.IncomingForm();
-    form.parse(req, async (err, fields, files) => {
-      if (err) {
-        console.error('Form parsing error:', err);
-        return res.status(500).json({ error: 'Error processing upload.' });
+  const form = new formidable.IncomingForm();
+  form.parse(req, async (err, fields, files) => {
+    if (err) {
+      console.error('Form parsing error:', err);
+      return res.status(500).json({ error: 'Error processing upload.' });
+    }
+    try {
+      const prescriptionFile = files.prescription_file;
+      if (!prescriptionFile) {
+          throw new Error('No prescription file was received by the server.');
       }
-      try {
-        const prescriptionFile = files.prescription_file;
-        if (!prescriptionFile) {
-            throw new Error('No prescription file was received by the server.');
-        }
-        
-        const fileUploadResponse = await client.query({
-          data: {
-            query: CREATE_FILE_MUTATION,
-            variables: {
-              files: {
-                alt: `Prescription for order #${fields.order_number}`,
-                contentType: prescriptionFile.type,
-                originalSource: fs.createReadStream(prescriptionFile.path),
-              },
+      
+      const fileUploadResponse = await client.query({
+        data: {
+          query: CREATE_FILE_MUTATION,
+          variables: {
+            files: {
+              alt: `Prescription for order #${fields.order_number}`,
+              contentType: prescriptionFile.type,
+              originalSource: fs.createReadStream(prescriptionFile.path),
             },
           },
-        });
-        const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
-        if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
-            console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
-            throw new Error('File upload to Shopify failed.');
-        }
-        const fileUrl = uploadedFile.originalSource.url;
-
-        const orderDataResponse = await client.query({
-            data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
-        });
-        const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
-        if (!orderGid) {
-            throw new Error(`Order with number #${fields.order_number} not found.`);
-        }
-        
-        const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
-        await client.query({
-            data: {
-                query: UPDATE_ORDER_MUTATION,
-                variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
-            }
-        });
-        
-        res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });
-
-      } catch (error) {
-        console.error('Inner Error in upload process:', error);
-        res.status(500).json({ error: 'An internal server error occurred.' });
+        },
+      });
+      const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
+      if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
+          console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
+          throw new Error('File upload to Shopify failed.');
       }
-    });
-  } catch (error) {
-    console.error('Outer Error initializing client:', error);
-    res.status(500).json({ error: 'Failed to initialize. Check API credentials.' });
-  }
+      const fileUrl = uploadedFile.originalSource.url;
+
+      const orderDataResponse = await client.query({
+          data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
+      });
+      const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
+      if (!orderGid) {
+          throw new Error(`Order with number #${fields.order_number} not found.`);
+      }
+      
+      const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
+      await client.query({
+          data: {
+              query: UPDATE_ORDER_MUTATION,
+              variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
+          }
+      });
+      
+      res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });
+
+    } catch (error) {
+      console.error('Error in upload process:', error);
+      res.status(500).json({ error: 'An internal server error occurred. Please check the Vercel logs.' });
+    }
+  });
 };

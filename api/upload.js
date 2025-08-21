@@ -1,4 +1,5 @@
 const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
+require('@shopify/shopify-api/adapters/node'); // ADD THIS REQUIRED ADAPTER
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
@@ -6,7 +7,7 @@ const SHOP_NAME = 'accunest.co.in';
 
 // Initialize the Shopify API context with all required fields
 const shopify = shopifyApi({
-  hostName: SHOP_NAME, // Added this required line
+  hostName: SHOP_NAME,
   apiVersion: LATEST_API_VERSION,
   isCustomStoreApp: true,
   adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,

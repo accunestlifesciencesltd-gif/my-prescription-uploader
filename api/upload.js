@@ -1,25 +1,16 @@
-// Paste this entire code block into api/upload.js
+// FINAL CORRECTED CODE - Paste this entire block into api/upload.js
 
 const shopify = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
-// ▼▼▼ CORRECTED THIS LINE (removed https://) ▼▼▼
 const SHOP_NAME = 'accunest.co.in';
-// ▲▲▲ CORRECTED THIS LINE ▲▲▲
-
 const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
-
-const client = new shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
 
 const CREATE_FILE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {
     fileCreate(files: $files) {
-      files {
-        id
-        fileStatus
-        originalSource { url }
-      }
+      files { id, fileStatus, originalSource { url } }
       userErrors { field, message }
     }
   }
@@ -35,7 +26,6 @@ const UPDATE_ORDER_MUTATION = `
 `;
 
 module.exports = async (req, res) => {
-  // This line is now correct because SHOP_NAME doesn't have https://
   res.setHeader('Access-Control-Allow-Origin', `https://${SHOP_NAME}`);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -47,60 +37,66 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const form = new formidable.IncomingForm();
-  form.parse(req, async (err, fields, files) => {
-    if (err) {
-      console.error('Form parsing error:', err);
-      return res.status(500).json({ error: 'Error processing upload.' });
-    }
-    try {
-      const prescriptionFile = files.prescription_file;
-      if (!prescriptionFile) {
-          throw new Error('No prescription file was received by the server.');
+  try {
+    // MOVED client initialization inside the handler for robustness
+    const client = new shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
+    
+    const form = new formidable.IncomingForm();
+    form.parse(req, async (err, fields, files) => {
+      if (err) {
+        console.error('Form parsing error:', err);
+        return res.status(500).json({ error: 'Error processing upload.' });
       }
-      
-      const fileUploadResponse = await client.query({
-        data: {
-          query: CREATE_FILE_MUTATION,
-          variables: {
-            files: {
-              alt: `Prescription for order #${fields.order_number}`,
-              contentType: prescriptionFile.type,
-              originalSource: fs.createReadStream(prescriptionFile.path),
+      try {
+        const prescriptionFile = files.prescription_file;
+        if (!prescriptionFile) {
+            throw new Error('No prescription file was received by the server.');
+        }
+        
+        const fileUploadResponse = await client.query({
+          data: {
+            query: CREATE_FILE_MUTATION,
+            variables: {
+              files: {
+                alt: `Prescription for order #${fields.order_number}`,
+                contentType: prescriptionFile.type,
+                originalSource: fs.createReadStream(prescriptionFile.path),
+              },
             },
           },
-        },
-      });
-      const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
-      if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
-          console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
-          throw new Error('File upload to Shopify failed.');
-      }
-      const fileUrl = uploadedFile.originalSource.url;
+        });
+        const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
+        if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
+            console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
+            throw new Error('File upload to Shopify failed.');
+        }
+        const fileUrl = uploadedFile.originalSource.url;
 
-      // ▼▼▼ IMPROVED THIS LINE (added # to the order number query) ▼▼▼
-      const orderDataResponse = await client.query({
-          data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
-      });
-      const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
-      if (!orderGid) {
-          throw new Error(`Order with number #${fields.order_number} not found.`);
-      }
-      
-      const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
-      await client.query({
-          data: {
-              query: UPDATE_ORDER_MUTATION,
-              variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
-          }
-      });
-      
-      res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });
+        const orderDataResponse = await client.query({
+            data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
+        });
+        const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
+        if (!orderGid) {
+            throw new Error(`Order with number #${fields.order_number} not found.`);
+        }
+        
+        const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
+        await client.query({
+            data: {
+                query: UPDATE_ORDER_MUTATION,
+                variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
+            }
+        });
+        
+        res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });
 
-    } catch (error) {
-      // ▼▼▼ IMPROVED THIS LINE (logs the full error for better debugging) ▼▼▼
-      console.error('Error in upload process:', error);
-      res.status(500).json({ error: 'An internal server error occurred.' });
-    }
-  });
+      } catch (error) {
+        console.error('Inner Error in upload process:', error);
+        res.status(500).json({ error: 'An internal server error occurred.' });
+      }
+    });
+  } catch (error) {
+    console.error('Outer Error initializing client:', error);
+    res.status(500).json({ error: 'Failed to initialize. Check API credentials.' });
+  }
 };

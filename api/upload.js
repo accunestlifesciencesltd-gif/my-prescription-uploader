@@ -255,40 +255,63 @@ module.exports = async (req, res) => {
       }
 
       console.log('File uploaded successfully with status:', uploadedFile.fileStatus);
+      console.log('Uploaded file object:', JSON.stringify(uploadedFile, null, 2));
 
-      // Get the URL based on the file type
-      let fileUrl;
+      // Get the URL based on the file type - with fallback options
+      let fileUrl = null;
+      
       if (uploadedFile.url) {
         // GenericFile type
         fileUrl = uploadedFile.url;
-      } else if (uploadedFile.image) {
+        console.log('Using GenericFile URL:', fileUrl);
+      } else if (uploadedFile.image && uploadedFile.image.url) {
         // MediaImage type
         fileUrl = uploadedFile.image.url;
-      } else if (uploadedFile.originalSource) {
+        console.log('Using MediaImage URL:', fileUrl);
+      } else if (uploadedFile.originalSource && uploadedFile.originalSource.url) {
         // Video type
         fileUrl = uploadedFile.originalSource.url;
+        console.log('Using Video URL:', fileUrl);
       } else {
-        throw new Error('Unable to get file URL from uploaded file');
+        // Fallback: use the staged resource URL if no specific URL is available
+        fileUrl = stagedTarget.resourceUrl;
+        console.log('Using fallback resourceUrl:', fileUrl);
+      }
+
+      if (!fileUrl) {
+        console.error('No file URL available from any source');
+        // Continue anyway - we can still update the order without the direct file URL
+        fileUrl = `File uploaded to Shopify with ID: ${uploadedFile.id}`;
       }
       
       const orderDataResponse = await client.request(`
         { 
-          orders(first: 1, query:"name:#${fields.order_number}") { 
+          orders(first: 1, query: "name:#${fields.order_number}") { 
             edges { 
               node { 
-                id 
+                id
+                name
+                tags
               } 
             } 
           } 
         }
       `);
       
+      console.log('Order search response:', JSON.stringify(orderDataResponse, null, 2));
+      
       const orderGid = orderDataResponse.data.orders.edges[0]?.node?.id;
       if (!orderGid) {
+        console.error(`Order not found for number: #${fields.order_number}`);
+        console.error('Available orders:', orderDataResponse.data.orders.edges);
         throw new Error(`Order with number #${fields.order_number} not found.`);
       }
       
+      console.log('Found order ID:', orderGid);
+      
       const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
+      
+      console.log('Updating order with note:', note);
       
       const orderUpdateResponse = await client.request(UPDATE_ORDER_MUTATION, {
         variables: { 
@@ -300,10 +323,12 @@ module.exports = async (req, res) => {
         }
       });
 
+      console.log('Order update response:', JSON.stringify(orderUpdateResponse, null, 2));
+
       // Check for order update errors
       if (orderUpdateResponse.data.orderUpdate.userErrors && orderUpdateResponse.data.orderUpdate.userErrors.length > 0) {
         console.error('Order update errors:', orderUpdateResponse.data.orderUpdate.userErrors);
-        // Still return success since file was uploaded, but log the error
+        throw new Error('Failed to update order: ' + orderUpdateResponse.data.orderUpdate.userErrors.map(e => e.message).join(', '));
       }
       
       res.status(200).json({ 

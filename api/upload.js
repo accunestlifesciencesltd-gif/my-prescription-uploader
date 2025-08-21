@@ -2,6 +2,8 @@ const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 require('@shopify/shopify-api/adapters/node');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 const SHOP_NAME = 'aq6tap-1i.myshopify.com';
 
 // Initialize the Shopify API context with all required fields
@@ -12,6 +14,23 @@ const shopify = shopifyApi({
   adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
   apiSecretKey: 'this-secret-can-be-any-string', 
 });
+
+// Mutation to create staged upload
+const STAGED_UPLOADS_CREATE_MUTATION = `
+  mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+    stagedUploadsCreate(input: $input) {
+      stagedTargets {
+        url
+        resourceUrl
+        parameters {
+          name
+          value
+        }
+      }
+      userErrors { field, message }
+    }
+  }
+`;
 
 // Fixed mutation - using inline fragments to get URL based on file type
 const CREATE_FILE_MUTATION = `
@@ -79,14 +98,76 @@ module.exports = async (req, res) => {
       if (!prescriptionFile) {
         throw new Error('No prescription file was received by the server.');
       }
+
+      // Step 1: Create staged upload
+      const fileSize = fs.statSync(prescriptionFile.path).size;
+      const fileName = prescriptionFile.name || 'prescription.pdf';
       
-      // Fixed file upload request structure
+      // Determine content type enum based on MIME type
+      let contentType = 'FILE'; // Default to FILE
+      if (prescriptionFile.type) {
+        if (prescriptionFile.type.startsWith('image/')) {
+          contentType = 'IMAGE';
+        } else if (prescriptionFile.type.startsWith('video/')) {
+          contentType = 'VIDEO';
+        }
+      }
+
+      const stagedUploadResponse = await client.request(STAGED_UPLOADS_CREATE_MUTATION, {
+        variables: {
+          input: [{
+            filename: fileName,
+            mimeType: prescriptionFile.type || 'application/pdf',
+            httpMethod: 'POST',
+            resource: contentType
+          }]
+        }
+      });
+
+      if (stagedUploadResponse.data.stagedUploadsCreate.userErrors?.length > 0) {
+        console.error('Staged upload errors:', stagedUploadResponse.data.stagedUploadsCreate.userErrors);
+        throw new Error('Failed to create staged upload: ' + stagedUploadResponse.data.stagedUploadsCreate.userErrors.map(e => e.message).join(', '));
+      }
+
+      const stagedTarget = stagedUploadResponse.data.stagedUploadsCreate.stagedTargets[0];
+      if (!stagedTarget) {
+        throw new Error('No staged upload target received');
+      }
+
+      // Step 2: Upload file to staged URL
+      const FormData = require('form-data');
+      const fetch = require('node-fetch');
+      
+      const formData = new FormData();
+      
+      // Add parameters from staged upload
+      stagedTarget.parameters.forEach(param => {
+        formData.append(param.name, param.value);
+      });
+      
+      // Add the file
+      formData.append('file', fs.createReadStream(prescriptionFile.path), {
+        filename: fileName,
+        contentType: prescriptionFile.type || 'application/pdf'
+      });
+
+      const uploadResponse = await fetch(stagedTarget.url, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!uploadResponse.ok) {
+        console.error('File upload failed:', await uploadResponse.text());
+        throw new Error('Failed to upload file to staged URL');
+      }
+
+      // Step 3: Create file record in Shopify
       const fileUploadResponse = await client.request(CREATE_FILE_MUTATION, {
         variables: {
-          files: [{  // Note: this should be an array
+          files: [{
             alt: `Prescription for order #${fields.order_number}`,
-            contentType: prescriptionFile.type,
-            originalSource: fs.createReadStream(prescriptionFile.path),
+            contentType: contentType,
+            originalSource: stagedTarget.resourceUrl,
           }],
         },
       });

@@ -1,4 +1,4 @@
-const { shopifyApi, LATEST_API_VERSION, ApiVersion } = require('@shopify/shopify-api'); // Added ApiVersion
+const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 require('@shopify/shopify-api/adapters/node');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
@@ -8,7 +8,7 @@ const SHOP_NAME = 'aq6tap-1i.myshopify.com';
 // Initialize the Shopify API context with all required fields
 const shopify = shopifyApi({
   hostName: SHOP_NAME,
-  apiVersion: ApiVersion.October24, // Changed to a stable API version
+  apiVersion: '2024-10', // Changed to a string to fix the error
   isCustomStoreApp: true,
   adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
   apiSecretKey: 'this-secret-can-be-any-string', 

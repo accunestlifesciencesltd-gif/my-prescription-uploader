@@ -1,17 +1,15 @@
-// FINAL, MODERN VERSION - Paste this entire block into api/upload.js
-
 const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
 const SHOP_NAME = 'accunest.co.in';
 
-// Initialize the Shopify API context. This is the new, correct way.
+// Initialize the Shopify API context with all required fields
 const shopify = shopifyApi({
+  hostName: SHOP_NAME, // Added this required line
   apiVersion: LATEST_API_VERSION,
-  isCustomStoreApp: true, // This is the modern term for a private/custom app
+  isCustomStoreApp: true,
   adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
-  // The following is required by the library, but not used for our auth
   apiSecretKey: 'this-secret-can-be-any-string', 
 });
 
@@ -52,7 +50,6 @@ module.exports = async (req, res) => {
       return res.status(500).json({ error: 'Error processing upload.' });
     }
     try {
-      // Create a session and a client for this specific request. This is the new pattern.
       const session = shopify.session.customAppSession(SHOP_NAME);
       const client = new shopify.clients.Graphql({ session });
 

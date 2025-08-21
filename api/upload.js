@@ -13,16 +13,28 @@ const shopify = shopifyApi({
   apiSecretKey: 'this-secret-can-be-any-string', 
 });
 
-// Fixed mutation - removed originalSource field that doesn't exist
+// Fixed mutation - using inline fragments to get URL based on file type
 const CREATE_FILE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {
     fileCreate(files: $files) {
       files { 
         id 
         fileStatus 
-        url
         alt
         createdAt
+        ... on GenericFile {
+          url
+        }
+        ... on MediaImage {
+          image {
+            url
+          }
+        }
+        ... on Video {
+          originalSource {
+            url
+          }
+        }
       }
       userErrors { field, message }
     }
@@ -91,8 +103,20 @@ module.exports = async (req, res) => {
         throw new Error('File upload to Shopify failed.');
       }
 
-      // Use the correct field name
-      const fileUrl = uploadedFile.url;
+      // Get the URL based on the file type
+      let fileUrl;
+      if (uploadedFile.url) {
+        // GenericFile type
+        fileUrl = uploadedFile.url;
+      } else if (uploadedFile.image) {
+        // MediaImage type
+        fileUrl = uploadedFile.image.url;
+      } else if (uploadedFile.originalSource) {
+        // Video type
+        fileUrl = uploadedFile.originalSource.url;
+      } else {
+        throw new Error('Unable to get file URL from uploaded file');
+      }
       
       const orderDataResponse = await client.request(`
         { 

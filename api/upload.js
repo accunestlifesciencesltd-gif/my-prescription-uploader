@@ -1,6 +1,6 @@
 // Paste this entire code block into api/upload.js
 
-const { Shopify } = require('@shopify/shopify-api');
+const shopify = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
@@ -10,7 +10,7 @@ const SHOP_NAME = 'https://accunest.co.in';
 
 const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN; 
 
-const client = new Shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
+const client = new shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
 
 const CREATE_FILE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {

@@ -242,10 +242,19 @@ module.exports = async (req, res) => {
       }
 
       const uploadedFile = fileUploadResponse.data.fileCreate.files[0];
-      if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
-        console.error('Shopify file upload failed. File status:', uploadedFile?.fileStatus);
-        throw new Error('File upload to Shopify failed.');
+      if (!uploadedFile) {
+        console.error('No file returned from Shopify');
+        throw new Error('File upload to Shopify failed - no file returned.');
       }
+
+      // Accept both UPLOADED and READY statuses
+      const validStatuses = ['UPLOADED', 'READY'];
+      if (!validStatuses.includes(uploadedFile.fileStatus)) {
+        console.error('Shopify file upload failed. File status:', uploadedFile?.fileStatus);
+        throw new Error(`File upload to Shopify failed. Status: ${uploadedFile.fileStatus}`);
+      }
+
+      console.log('File uploaded successfully with status:', uploadedFile.fileStatus);
 
       // Get the URL based on the file type
       let fileUrl;

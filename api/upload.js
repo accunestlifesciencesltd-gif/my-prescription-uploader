@@ -1,15 +1,14 @@
-const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
+const { shopifyApi, LATEST_API_VERSION, ApiVersion } = require('@shopify/shopify-api'); // Added ApiVersion
 require('@shopify/shopify-api/adapters/node');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
-// CORRECT DOMAIN ADDED HERE
 const SHOP_NAME = 'aq6tap-1i.myshopify.com';
 
 // Initialize the Shopify API context with all required fields
 const shopify = shopifyApi({
   hostName: SHOP_NAME,
-  apiVersion: LATEST_API_VERSION,
+  apiVersion: ApiVersion.October24, // Changed to a stable API version
   isCustomStoreApp: true,
   adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
   apiSecretKey: 'this-secret-can-be-any-string', 
@@ -34,7 +33,7 @@ const UPDATE_ORDER_MUTATION = `
 `;
 
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', `https://accunest.co.in`); // Your custom domain is correct here for CORS
+  res.setHeader('Access-Control-Allow-Origin', `https://accunest.co.in`);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 

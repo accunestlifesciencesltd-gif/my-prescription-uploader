@@ -6,6 +6,72 @@ const https = require('https');
 const http = require('http');
 const path = require('path');
 const { URL } = require('url');
+
+const SHOP_NAME = 'aq6tap-1i.myshopify.com';
+
+// Initialize the Shopify API context with all required fields
+const shopify = shopifyApi({
+  hostName: SHOP_NAME,
+  apiVersion: '2024-10',
+  isCustomStoreApp: true,
+  adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
+  apiSecretKey: 'this-secret-can-be-any-string', 
+});
+
+// Mutation to create staged upload
+const STAGED_UPLOADS_CREATE_MUTATION = `
+  mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+    stagedUploadsCreate(input: $input) {
+      stagedTargets {
+        url
+        resourceUrl
+        parameters {
+          name
+          value
+        }
+      }
+      userErrors { field, message }
+    }
+  }
+`;
+
+// Mutation to create file from staged upload
+const CREATE_FILE_MUTATION = `
+  mutation fileCreate($files: [FileCreateInput!]!) {
+    fileCreate(files: $files) {
+      files { 
+        id 
+        fileStatus 
+        alt
+        createdAt
+        ... on GenericFile {
+          url
+        }
+        ... on MediaImage {
+          image {
+            url
+          }
+        }
+        ... on Video {
+          originalSource {
+            url
+          }
+        }
+      }
+      userErrors { field, message }
+    }
+  }
+`;
+
+const UPDATE_ORDER_MUTATION = `
+  mutation orderUpdate($input: OrderInput!) {
+    orderUpdate(input: $input) {
+      order { id, tags }
+      userErrors { field, message }
+    }
+  }
+`;
+
 // Helper function to create multipart form data
 function createMultipartData(fields, file, filename, contentType) {
   const boundary = `----formdata-${Date.now()}`;
@@ -66,69 +132,6 @@ function makeRequest(url, options, data) {
     req.end();
   });
 }
-
-// Initialize the Shopify API context with all required fields
-const shopify = shopifyApi({
-  hostName: SHOP_NAME,
-  apiVersion: '2024-10', // Changed to a string to fix the error
-  isCustomStoreApp: true,
-  adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
-  apiSecretKey: 'this-secret-can-be-any-string', 
-});
-
-const SHOP_NAME = 'aq6tap-1i.myshopify.com';
-const STAGED_UPLOADS_CREATE_MUTATION = `
-  mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-    stagedUploadsCreate(input: $input) {
-      stagedTargets {
-        url
-        resourceUrl
-        parameters {
-          name
-          value
-        }
-      }
-      userErrors { field, message }
-    }
-  }
-`;
-
-// Fixed mutation - using inline fragments to get URL based on file type
-const CREATE_FILE_MUTATION = `
-  mutation fileCreate($files: [FileCreateInput!]!) {
-    fileCreate(files: $files) {
-      files { 
-        id 
-        fileStatus 
-        alt
-        createdAt
-        ... on GenericFile {
-          url
-        }
-        ... on MediaImage {
-          image {
-            url
-          }
-        }
-        ... on Video {
-          originalSource {
-            url
-          }
-        }
-      }
-      userErrors { field, message }
-    }
-  }
-`;
-
-const UPDATE_ORDER_MUTATION = `
-  mutation orderUpdate($input: OrderInput!) {
-    orderUpdate(input: $input) {
-      order { id, tags }
-      userErrors { field, message }
-    }
-  }
-`;
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', `https://accunest.co.in`);

@@ -1,13 +1,19 @@
-// FINAL CORRECTED CODE - Paste this entire block into api/upload.js
+// FINAL, MODERN VERSION - Paste this entire block into api/upload.js
 
-const { Shopify } = require('@shopify/shopify-api');
+const { shopifyApi, LATEST_API_VERSION } = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
 const SHOP_NAME = 'accunest.co.in';
-const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 
-const client = new Shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
+// Initialize the Shopify API context. This is the new, correct way.
+const shopify = shopifyApi({
+  apiVersion: LATEST_API_VERSION,
+  isCustomStoreApp: true, // This is the modern term for a private/custom app
+  adminApiAccessToken: process.env.SHOPIFY_ADMIN_API_TOKEN,
+  // The following is required by the library, but not used for our auth
+  apiSecretKey: 'this-secret-can-be-any-string', 
+});
 
 const CREATE_FILE_MUTATION = `
   mutation fileCreate($files: [FileCreateInput!]!) {
@@ -46,44 +52,41 @@ module.exports = async (req, res) => {
       return res.status(500).json({ error: 'Error processing upload.' });
     }
     try {
+      // Create a session and a client for this specific request. This is the new pattern.
+      const session = shopify.session.customAppSession(SHOP_NAME);
+      const client = new shopify.clients.Graphql({ session });
+
       const prescriptionFile = files.prescription_file;
       if (!prescriptionFile) {
-          throw new Error('No prescription file was received by the server.');
+        throw new Error('No prescription file was received by the server.');
       }
       
-      const fileUploadResponse = await client.query({
-        data: {
-          query: CREATE_FILE_MUTATION,
-          variables: {
-            files: {
-              alt: `Prescription for order #${fields.order_number}`,
-              contentType: prescriptionFile.type,
-              originalSource: fs.createReadStream(prescriptionFile.path),
-            },
+      const fileUploadResponse = await client.request(CREATE_FILE_MUTATION, {
+        variables: {
+          files: {
+            alt: `Prescription for order #${fields.order_number}`,
+            contentType: prescriptionFile.type,
+            originalSource: fs.createReadStream(prescriptionFile.path),
           },
         },
       });
-      const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
+
+      const uploadedFile = fileUploadResponse.data.fileCreate.files[0];
       if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
-          console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
-          throw new Error('File upload to Shopify failed.');
+        console.error('Shopify file upload failed:', fileUploadResponse.data.fileCreate.userErrors);
+        throw new Error('File upload to Shopify failed.');
       }
       const fileUrl = uploadedFile.originalSource.url;
 
-      const orderDataResponse = await client.query({
-          data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
-      });
-      const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
+      const orderDataResponse = await client.request(`{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`);
+      const orderGid = orderDataResponse.data.orders.edges[0]?.node?.id;
       if (!orderGid) {
-          throw new Error(`Order with number #${fields.order_number} not found.`);
+        throw new Error(`Order with number #${fields.order_number} not found.`);
       }
       
       const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
-      await client.query({
-          data: {
-              query: UPDATE_ORDER_MUTATION,
-              variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
-          }
+      await client.request(UPDATE_ORDER_MUTATION, {
+        variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
       });
       
       res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });

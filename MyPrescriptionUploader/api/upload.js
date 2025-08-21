@@ -5,7 +5,7 @@ const formidable = require('formidable-serverless');
 const fs = require('fs');
 
 // ▼▼▼ EDIT THIS LINE ▼▼▼
-const SHOP_NAME = 'https://accunest.co.in'; 
+const SHOP_NAME = 'accunest.co.in'; 
 // ▲▲▲ EDIT THIS LINE ▲▲▲
 
 const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN; 

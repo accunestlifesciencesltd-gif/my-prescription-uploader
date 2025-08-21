@@ -4,11 +4,11 @@ const shopify = require('@shopify/shopify-api');
 const formidable = require('formidable-serverless');
 const fs = require('fs');
 
-// ▼▼▼ EDIT THIS LINE ▼▼▼
-const SHOP_NAME = 'https://accunest.co.in'; 
-// ▲▲▲ EDIT THIS LINE ▲▲▲
+// ▼▼▼ CORRECTED THIS LINE (removed https://) ▼▼▼
+const SHOP_NAME = 'accunest.co.in';
+// ▲▲▲ CORRECTED THIS LINE ▲▲▲
 
-const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN; 
+const ADMIN_API_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_API_TOKEN;
 
 const client = new shopify.Clients.Graphql(SHOP_NAME, ADMIN_API_ACCESS_TOKEN);
 
@@ -35,6 +35,7 @@ const UPDATE_ORDER_MUTATION = `
 `;
 
 module.exports = async (req, res) => {
+  // This line is now correct because SHOP_NAME doesn't have https://
   res.setHeader('Access-Control-Allow-Origin', `https://${SHOP_NAME}`);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -49,10 +50,15 @@ module.exports = async (req, res) => {
   const form = new formidable.IncomingForm();
   form.parse(req, async (err, fields, files) => {
     if (err) {
+      console.error('Form parsing error:', err);
       return res.status(500).json({ error: 'Error processing upload.' });
     }
     try {
       const prescriptionFile = files.prescription_file;
+      if (!prescriptionFile) {
+          throw new Error('No prescription file was received by the server.');
+      }
+      
       const fileUploadResponse = await client.query({
         data: {
           query: CREATE_FILE_MUTATION,
@@ -67,16 +73,20 @@ module.exports = async (req, res) => {
       });
       const uploadedFile = fileUploadResponse.body.data.fileCreate.files[0];
       if (!uploadedFile || uploadedFile.fileStatus !== 'READY') {
+          console.error('Shopify file upload failed:', fileUploadResponse.body.data.fileCreate.userErrors);
           throw new Error('File upload to Shopify failed.');
       }
       const fileUrl = uploadedFile.originalSource.url;
+
+      // ▼▼▼ IMPROVED THIS LINE (added # to the order number query) ▼▼▼
       const orderDataResponse = await client.query({
-          data: `{ orders(first: 1, query:"name:${fields.order_number}") { edges { node { id } } } }`
+          data: `{ orders(first: 1, query:"name:#${fields.order_number}") { edges { node { id } } } }`
       });
       const orderGid = orderDataResponse.body.data.orders.edges[0]?.node?.id;
       if (!orderGid) {
-          throw new Error(`Order with number ${fields.order_number} not found.`);
+          throw new Error(`Order with number #${fields.order_number} not found.`);
       }
+      
       const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
       await client.query({
           data: {
@@ -84,9 +94,12 @@ module.exports = async (req, res) => {
               variables: { input: { id: orderGid, tags: ['Prescription-Uploaded'], note: note } }
           }
       });
+      
       res.status(200).json({ success: true, message: 'Prescription uploaded successfully!' });
+
     } catch (error) {
-      console.error('Error in upload process:', error.message);
+      // ▼▼▼ IMPROVED THIS LINE (logs the full error for better debugging) ▼▼▼
+      console.error('Error in upload process:', error);
       res.status(500).json({ error: 'An internal server error occurred.' });
     }
   });

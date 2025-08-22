@@ -158,187 +158,23 @@ module.exports = async (req, res) => {
       const session = shopify.session.customAppSession(SHOP_NAME);
       const client = new shopify.clients.Graphql({ session });
       
-      const prescriptionFile = files.prescription_file;
-      if (!prescriptionFile) {
-        throw new Error('No prescription file was received by the server.');
-      }
-
-      // Step 1: Create staged upload
-      const fileSize = fs.statSync(prescriptionFile.path).size;
-      const fileName = prescriptionFile.name || 'prescription.pdf';
+      // Get service type from form data
+      const serviceType = fields.service_type;
+      console.log('Service type:', serviceType);
       
-      // Determine content type enum based on MIME type
-      let contentType = 'FILE'; // Default to FILE
-      if (prescriptionFile.type) {
-        if (prescriptionFile.type.startsWith('image/')) {
-          contentType = 'IMAGE';
-        } else if (prescriptionFile.type.startsWith('video/')) {
-          contentType = 'VIDEO';
-        }
-      }
-
-      const stagedUploadResponse = await client.request(STAGED_UPLOADS_CREATE_MUTATION, {
-        variables: {
-          input: [{
-            filename: fileName,
-            mimeType: prescriptionFile.type || 'application/pdf',
-            httpMethod: 'POST',
-            resource: contentType
-          }]
-        }
-      });
-
-      if (stagedUploadResponse.data.stagedUploadsCreate.userErrors?.length > 0) {
-        console.error('Staged upload errors:', stagedUploadResponse.data.stagedUploadsCreate.userErrors);
-        throw new Error('Failed to create staged upload: ' + stagedUploadResponse.data.stagedUploadsCreate.userErrors.map(e => e.message).join(', '));
-      }
-
-      const stagedTarget = stagedUploadResponse.data.stagedUploadsCreate.stagedTargets[0];
-      if (!stagedTarget) {
-        throw new Error('No staged upload target received');
-      }
-
-      // Step 2: Upload file to staged URL
-      const formFields = stagedTarget.parameters.map(param => ({
-        name: param.name,
-        value: param.value
-      }));
-      
-      const multipartData = createMultipartData(
-        formFields,
-        prescriptionFile.path,
-        fileName,
-        prescriptionFile.type || 'application/pdf'
-      );
-
-      const uploadResponse = await makeRequest(stagedTarget.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': multipartData.contentType,
-          'Content-Length': multipartData.buffer.length
-        }
-      }, multipartData.buffer);
-
-      if (!uploadResponse.ok) {
-        console.error('File upload failed:', await uploadResponse.text());
-        throw new Error('Failed to upload file to staged URL');
-      }
-
-      // Step 3: Create file record in Shopify
-      const fileUploadResponse = await client.request(CREATE_FILE_MUTATION, {
-        variables: {
-          files: [{
-            alt: `Prescription for order #${fields.order_number}`,
-            contentType: contentType,
-            originalSource: stagedTarget.resourceUrl,
-          }],
-        },
-      });
-
-      // Check for GraphQL errors
-      if (fileUploadResponse.data.fileCreate.userErrors && fileUploadResponse.data.fileCreate.userErrors.length > 0) {
-        console.error('Shopify file upload errors:', fileUploadResponse.data.fileCreate.userErrors);
-        throw new Error('File upload to Shopify failed: ' + fileUploadResponse.data.fileCreate.userErrors.map(e => e.message).join(', '));
-      }
-
-      const uploadedFile = fileUploadResponse.data.fileCreate.files[0];
-      if (!uploadedFile) {
-        console.error('No file returned from Shopify');
-        throw new Error('File upload to Shopify failed - no file returned.');
-      }
-
-      // Accept both UPLOADED and READY statuses
-      const validStatuses = ['UPLOADED', 'READY'];
-      if (!validStatuses.includes(uploadedFile.fileStatus)) {
-        console.error('Shopify file upload failed. File status:', uploadedFile?.fileStatus);
-        throw new Error(`File upload to Shopify failed. Status: ${uploadedFile.fileStatus}`);
-      }
-
-      console.log('File uploaded successfully with status:', uploadedFile.fileStatus);
-      console.log('Uploaded file object:', JSON.stringify(uploadedFile, null, 2));
-
-      // Get the URL based on the file type - with fallback options
-      let fileUrl = null;
-      
-      if (uploadedFile.url) {
-        // GenericFile type
-        fileUrl = uploadedFile.url;
-        console.log('Using GenericFile URL:', fileUrl);
-      } else if (uploadedFile.image && uploadedFile.image.url) {
-        // MediaImage type
-        fileUrl = uploadedFile.image.url;
-        console.log('Using MediaImage URL:', fileUrl);
-      } else if (uploadedFile.originalSource && uploadedFile.originalSource.url) {
-        // Video type
-        fileUrl = uploadedFile.originalSource.url;
-        console.log('Using Video URL:', fileUrl);
+      // Handle different service types
+      if (serviceType === 'free_consultation') {
+        // Handle free consultation request without file upload
+        return await handleFreeConsultation(client, fields, res);
+      } else if (serviceType === 'upload_prescription') {
+        // Handle prescription upload
+        return await handlePrescriptionUpload(client, fields, files, res);
       } else {
-        // Fallback: use the staged resource URL if no specific URL is available
-        fileUrl = stagedTarget.resourceUrl;
-        console.log('Using fallback resourceUrl:', fileUrl);
+        throw new Error('Invalid service type specified');
       }
-
-      if (!fileUrl) {
-        console.error('No file URL available from any source');
-        // Continue anyway - we can still update the order without the direct file URL
-        fileUrl = `File uploaded to Shopify with ID: ${uploadedFile.id}`;
-      }
-      
-      const orderDataResponse = await client.request(`
-        { 
-          orders(first: 1, query: "name:#${fields.order_number}") { 
-            edges { 
-              node { 
-                id
-                name
-                tags
-              } 
-            } 
-          } 
-        }
-      `);
-      
-      console.log('Order search response:', JSON.stringify(orderDataResponse, null, 2));
-      
-      const orderGid = orderDataResponse.data.orders.edges[0]?.node?.id;
-      if (!orderGid) {
-        console.error(`Order not found for number: #${fields.order_number}`);
-        console.error('Available orders:', orderDataResponse.data.orders.edges);
-        throw new Error(`Order with number #${fields.order_number} not found.`);
-      }
-      
-      console.log('Found order ID:', orderGid);
-      
-      const note = `Prescription uploaded.\nFile Link: ${fileUrl}\nCustomer Email: ${fields.customer_email}\nAdditional Notes: ${fields.additional_notes}`;
-      
-      console.log('Updating order with note:', note);
-      
-      const orderUpdateResponse = await client.request(UPDATE_ORDER_MUTATION, {
-        variables: { 
-          input: { 
-            id: orderGid, 
-            tags: ['Prescription-Uploaded'], 
-            note: note 
-          } 
-        }
-      });
-
-      console.log('Order update response:', JSON.stringify(orderUpdateResponse, null, 2));
-
-      // Check for order update errors
-      if (orderUpdateResponse.data.orderUpdate.userErrors && orderUpdateResponse.data.orderUpdate.userErrors.length > 0) {
-        console.error('Order update errors:', orderUpdateResponse.data.orderUpdate.userErrors);
-        throw new Error('Failed to update order: ' + orderUpdateResponse.data.orderUpdate.userErrors.map(e => e.message).join(', '));
-      }
-      
-      res.status(200).json({ 
-        success: true, 
-        message: 'Prescription uploaded successfully!',
-        fileUrl: fileUrl
-      });
       
     } catch (error) {
-      console.error('Error in upload process:', error);
+      console.error('Error in processing:', error);
       res.status(500).json({ 
         error: 'An internal server error occurred. Please check the Vercel logs.',
         details: error.message 
@@ -346,3 +182,258 @@ module.exports = async (req, res) => {
     }
   });
 };
+
+// Handle free consultation requests
+async function handleFreeConsultation(client, fields, res) {
+  try {
+    // Find the order
+    const orderDataResponse = await client.request(`
+      { 
+        orders(first: 1, query: "name:#${fields.order_number}") { 
+          edges { 
+            node { 
+              id
+              name
+              tags
+            } 
+          } 
+        } 
+      }
+    `);
+    
+    console.log('Order search response:', JSON.stringify(orderDataResponse, null, 2));
+    
+    const orderGid = orderDataResponse.data.orders.edges[0]?.node?.id;
+    if (!orderGid) {
+      console.error(`Order not found for number: #${fields.order_number}`);
+      throw new Error(`Order with number #${fields.order_number} not found.`);
+    }
+    
+    console.log('Found order ID:', orderGid);
+    
+    // Create note for consultation request
+    const note = `Free consultation requested.
+Customer Email: ${fields.customer_email || 'Not provided'}
+Phone Number: ${fields.phone_number || 'Not provided'}
+Additional Notes: ${fields.additional_notes || 'None'}`;
+    
+    console.log('Updating order with consultation request:', note);
+    
+    const orderUpdateResponse = await client.request(UPDATE_ORDER_MUTATION, {
+      variables: { 
+        input: { 
+          id: orderGid, 
+          tags: ['Consultation-Requested'], 
+          note: note 
+        } 
+      }
+    });
+
+    console.log('Order update response:', JSON.stringify(orderUpdateResponse, null, 2));
+
+    // Check for order update errors
+    if (orderUpdateResponse.data.orderUpdate.userErrors && orderUpdateResponse.data.orderUpdate.userErrors.length > 0) {
+      console.error('Order update errors:', orderUpdateResponse.data.orderUpdate.userErrors);
+      throw new Error('Failed to update order: ' + orderUpdateResponse.data.orderUpdate.userErrors.map(e => e.message).join(', '));
+    }
+    
+    res.status(200).json({ 
+      success: true, 
+      message: 'Consultation request submitted successfully! Our team will contact you shortly.'
+    });
+    
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Handle prescription upload requests
+async function handlePrescriptionUpload(client, fields, files, res) {
+  try {
+    const prescriptionFile = files.prescription_file;
+    if (!prescriptionFile) {
+      throw new Error('No prescription file was received by the server.');
+    }
+
+    // Step 1: Create staged upload
+    const fileSize = fs.statSync(prescriptionFile.path).size;
+    const fileName = prescriptionFile.name || 'prescription.pdf';
+    
+    // Determine content type enum based on MIME type
+    let contentType = 'FILE'; // Default to FILE
+    if (prescriptionFile.type) {
+      if (prescriptionFile.type.startsWith('image/')) {
+        contentType = 'IMAGE';
+      } else if (prescriptionFile.type.startsWith('video/')) {
+        contentType = 'VIDEO';
+      }
+    }
+
+    const stagedUploadResponse = await client.request(STAGED_UPLOADS_CREATE_MUTATION, {
+      variables: {
+        input: [{
+          filename: fileName,
+          mimeType: prescriptionFile.type || 'application/pdf',
+          httpMethod: 'POST',
+          resource: contentType
+        }]
+      }
+    });
+
+    if (stagedUploadResponse.data.stagedUploadsCreate.userErrors?.length > 0) {
+      console.error('Staged upload errors:', stagedUploadResponse.data.stagedUploadsCreate.userErrors);
+      throw new Error('Failed to create staged upload: ' + stagedUploadResponse.data.stagedUploadsCreate.userErrors.map(e => e.message).join(', '));
+    }
+
+    const stagedTarget = stagedUploadResponse.data.stagedUploadsCreate.stagedTargets[0];
+    if (!stagedTarget) {
+      throw new Error('No staged upload target received');
+    }
+
+    // Step 2: Upload file to staged URL
+    const formFields = stagedTarget.parameters.map(param => ({
+      name: param.name,
+      value: param.value
+    }));
+    
+    const multipartData = createMultipartData(
+      formFields,
+      prescriptionFile.path,
+      fileName,
+      prescriptionFile.type || 'application/pdf'
+    );
+
+    const uploadResponse = await makeRequest(stagedTarget.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': multipartData.contentType,
+        'Content-Length': multipartData.buffer.length
+      }
+    }, multipartData.buffer);
+
+    if (!uploadResponse.ok) {
+      console.error('File upload failed:', await uploadResponse.text());
+      throw new Error('Failed to upload file to staged URL');
+    }
+
+    // Step 3: Create file record in Shopify
+    const fileUploadResponse = await client.request(CREATE_FILE_MUTATION, {
+      variables: {
+        files: [{
+          alt: `Prescription for order #${fields.order_number}`,
+          contentType: contentType,
+          originalSource: stagedTarget.resourceUrl,
+        }],
+      },
+    });
+
+    // Check for GraphQL errors
+    if (fileUploadResponse.data.fileCreate.userErrors && fileUploadResponse.data.fileCreate.userErrors.length > 0) {
+      console.error('Shopify file upload errors:', fileUploadResponse.data.fileCreate.userErrors);
+      throw new Error('File upload to Shopify failed: ' + fileUploadResponse.data.fileCreate.userErrors.map(e => e.message).join(', '));
+    }
+
+    const uploadedFile = fileUploadResponse.data.fileCreate.files[0];
+    if (!uploadedFile) {
+      console.error('No file returned from Shopify');
+      throw new Error('File upload to Shopify failed - no file returned.');
+    }
+
+    // Accept both UPLOADED and READY statuses
+    const validStatuses = ['UPLOADED', 'READY'];
+    if (!validStatuses.includes(uploadedFile.fileStatus)) {
+      console.error('Shopify file upload failed. File status:', uploadedFile?.fileStatus);
+      throw new Error(`File upload to Shopify failed. Status: ${uploadedFile.fileStatus}`);
+    }
+
+    console.log('File uploaded successfully with status:', uploadedFile.fileStatus);
+    console.log('Uploaded file object:', JSON.stringify(uploadedFile, null, 2));
+
+    // Get the URL based on the file type - with fallback options
+    let fileUrl = null;
+    
+    if (uploadedFile.url) {
+      // GenericFile type
+      fileUrl = uploadedFile.url;
+      console.log('Using GenericFile URL:', fileUrl);
+    } else if (uploadedFile.image && uploadedFile.image.url) {
+      // MediaImage type
+      fileUrl = uploadedFile.image.url;
+      console.log('Using MediaImage URL:', fileUrl);
+    } else if (uploadedFile.originalSource && uploadedFile.originalSource.url) {
+      // Video type
+      fileUrl = uploadedFile.originalSource.url;
+      console.log('Using Video URL:', fileUrl);
+    } else {
+      // Fallback: use the staged resource URL if no specific URL is available
+      fileUrl = stagedTarget.resourceUrl;
+      console.log('Using fallback resourceUrl:', fileUrl);
+    }
+
+    if (!fileUrl) {
+      console.error('No file URL available from any source');
+      // Continue anyway - we can still update the order without the direct file URL
+      fileUrl = `File uploaded to Shopify with ID: ${uploadedFile.id}`;
+    }
+    
+    const orderDataResponse = await client.request(`
+      { 
+        orders(first: 1, query: "name:#${fields.order_number}") { 
+          edges { 
+            node { 
+              id
+              name
+              tags
+            } 
+          } 
+        } 
+      }
+    `);
+    
+    console.log('Order search response:', JSON.stringify(orderDataResponse, null, 2));
+    
+    const orderGid = orderDataResponse.data.orders.edges[0]?.node?.id;
+    if (!orderGid) {
+      console.error(`Order not found for number: #${fields.order_number}`);
+      console.error('Available orders:', orderDataResponse.data.orders.edges);
+      throw new Error(`Order with number #${fields.order_number} not found.`);
+    }
+    
+    console.log('Found order ID:', orderGid);
+    
+    const note = `Prescription uploaded.
+File Link: ${fileUrl}
+Customer Email: ${fields.customer_email || 'Not provided'}
+Phone Number: ${fields.phone_number || 'Not provided'}
+Additional Notes: ${fields.additional_notes || 'None'}`;
+    
+    console.log('Updating order with note:', note);
+    
+    const orderUpdateResponse = await client.request(UPDATE_ORDER_MUTATION, {
+      variables: { 
+        input: { 
+          id: orderGid, 
+          tags: ['Prescription-Uploaded'], 
+          note: note 
+        } 
+      }
+    });
+
+    console.log('Order update response:', JSON.stringify(orderUpdateResponse, null, 2));
+
+    // Check for order update errors
+    if (orderUpdateResponse.data.orderUpdate.userErrors && orderUpdateResponse.data.orderUpdate.userErrors.length > 0) {
+      console.error('Order update errors:', orderUpdateResponse.data.orderUpdate.userErrors);
+      throw new Error('Failed to update order: ' + orderUpdateResponse.data.orderUpdate.userErrors.map(e => e.message).join(', '));
+    }
+    
+    res.status(200).json({ 
+      success: true, 
+      message: 'Prescription uploaded successfully!',
+      fileUrl: fileUrl
+    });
+    
+  } catch (error) {
+    throw error;
+  }
+}
